@@ -1,20 +1,19 @@
 # spaceinv
 
-FIXME: description
+Terminal based space invaders clone written in clojure.
 
 ## Installation
 
-Download from http://example.com/FIXME.
 
 ## Usage
 
-FIXME: explanation
+Run with
+    $lein run core.clj
+
+ or create standalone executable with Leiningen.
 
     $ java -jar spaceinv-0.1.0-standalone.jar [args]
 
-## Options
-
-FIXME: listing of options this app accepts.
 
 ## Examples
 
@@ -22,11 +21,8 @@ FIXME: listing of options this app accepts.
 
 ### Bugs
 
-...
+absolutely none.
 
-### Any Other Sections
-### That You Think
-### Might be Useful
 
 ## License
 
