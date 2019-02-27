@@ -1,0 +1,269 @@
+(ns spaceinv.core
+  (:gen-class))
+
+(require '[lanterna.screen :as s])
+
+(def scr (s/get-screen))
+
+(defn clear-screen [screen]
+  (let [blank (apply str "|" (apply str (repeat 78 \space)) "|")]
+    (doseq [row (range 43)]
+      (if (= (mod row 42) 0)
+        (s/put-string screen 0 row (apply str (repeat 80 "-")))
+      (s/put-string screen 0 row blank)))))
+
+(defn spawnRow [y]
+ (let [symb (cond
+                (= y 1) "#"
+                (= y 2) "@"
+                (= y 3) "="
+                (= y 4) "v")]
+  (loop [xpos 1
+         ypos y
+         rowList '()]
+    (if (= xpos 21)
+      rowList
+      (recur (inc xpos) ypos (conj rowList [xpos ypos symb]))))))
+
+(defn spawnAll []
+  (loop [fullList '()
+         cnt 1]
+    (if (= cnt 5)
+      fullList
+      (recur (apply conj fullList (spawnRow cnt)) (inc cnt)))))
+
+(def enemyList (spawnAll))
+
+(defn getColor [y]
+  (cond
+     (= y "#") {:fg :blue}
+     (= y "@") {:fg :cyan}
+     (= y "=") {:fg :green}
+     (= y "v") {:fg :red}))
+
+(defn drawEnemies [enLst]
+  (when (seq enLst)
+    (let [cur (first enLst)]
+    (s/put-string scr (get cur 0) (get cur 1) (get cur 2) (getColor (get cur 2)))
+    (recur (rest enLst)))))
+                
+
+(defn drawProjectiles [pL]
+  (when (seq pL)
+    (let [cur (first pL)]
+      (s/put-string scr (get cur 0) (get cur 1) "X" {:fg :blue :bg :red})
+      (recur (rest pL)))))
+
+
+(defn displayScore [score]
+  (s/put-string scr 1 40 (str "Score: " score))
+  (s/put-string scr 1 41 "Arrow keys to move, Space to shoot. Defeat all enemies to win! ESC to quit."))
+
+
+(defn moveEnemies
+  ([enemyPos]
+    (let [x (get enemyPos 0)
+          y (get enemyPos 1)
+          d (get enemyPos 2)]
+      (cond
+        (and (= x 58) (= d 0)) [x (inc y) (inc d)]   ;;move down + leftbound
+        (and (= x 0) (= d 1)) [x (inc y) (dec d)]  ;;move down + rightbound
+        (= d 0) [(inc x) y d]       ;;move right
+        (= d 1) [(dec x) y d])))  ;;move left
+  ([enemyPos enemyList]
+   (let [diff [(- (get (moveEnemies enemyPos) 0) (get enemyPos 0)) (- (get (moveEnemies enemyPos) 1) (get enemyPos 1))]]
+     (loop [ep enemyPos
+           el enemyList
+           newpos '()]
+      (if (empty? el)
+        newpos
+       (recur ep, (rest el), (conj newpos [(+ (get (first el) 0) (get diff 0)) (+ (get (first el) 1) (get diff 1)) (get (first el) 2)])))))))
+
+
+(defn getSpeed [enemyList]
+   (max (/ (count enemyList) 10) 2))
+
+
+(defn movePlayer [inp xp] 
+  (cond
+    (and (> xp 2) (= inp :left)) (dec xp)
+    (and (< xp 77) (= inp :right)) (inc xp)
+    :else xp))
+
+
+(defn playerShot [inp xpos carry]
+  (if (and (= carry 1) (= inp \space))
+    (list [xpos 38 -1])
+    nil))
+
+(defn projectileCollisionCheck [pV, enemyList]
+  (let [a (vector (get pV 0) (get pV 1) "#" )
+        b (vector (get pV 0) (get pV 1) "@" )
+        c (vector (get pV 0) (get pV 1) "=" )         
+        d (vector (get pV 0) (get pV 1) "v" )]
+    (if (some #{a b c d} enemyList)
+      true
+      false)))
+
+(defn updateProjectileList [projectileList input enemyList xpos carry]
+  (apply conj (playerShot input xpos carry)
+       (loop [pL projectileList 
+               inp input
+               el enemyList
+               updatedPList '()]
+          (cond
+            (empty? pL) updatedPList
+            ;(contains? el (first pL)) (recur (rest pL) inp el updatedPList)  ;;this prolly does nothing, recode this for collision detection -> use collisionCheck
+            (and (= (get (first pL) 2) -1) , (projectileCollisionCheck (first pL) el)) (recur (rest pL) inp el updatedPList)
+            (= (get (first pL) 2) -1) (recur (rest pL) inp el (conj updatedPList [(get (first pL) 0) 
+                                                        (+ (get (first pL) 1) (get (first pL) 2))
+                                                                   (get (first pL) 2)]))
+            :else (recur (rest pL) inp el (conj updatedPList [(get (first pL) 0)
+                                                              (+ (get (first pL) 1) (/ 1 4))
+                                                                   (get (first pL) 2)]))
+          )
+        ) 
+    )
+)
+
+
+(defn enemyShots [enemyList] ;returns list of new projectiles
+    (loop [eL enemyList
+           newProjectiles '()
+           cnt 0]
+      (cond
+       (or (empty? eL) (= cnt 3))
+        newProjectiles
+       (> (rand 200) 199)  ;;starts with 1/21 chance, gets higher
+        (recur (rest eL) (conj newProjectiles [(get (first eL) 0) (get (first eL) 1) 1]) (inc cnt))
+       :else
+        (recur (rest eL) newProjectiles cnt)
+      )))
+
+
+(defn enemyCollisionCheck [eV, projectileList]
+  (let [a (vector (get eV 0) (get eV 1) -1 )]
+    (if (some #{a} projectileList)
+      true
+      false)))
+
+(defn collisionEnemyUpdate [enemyList projectileList]  ;; return enemyList ohne schnittmenge mit projectiles
+  (loop [el enemyList
+         pl projectileList
+         newList '()]
+    (cond
+      (empty? el) newList
+      (enemyCollisionCheck (first el) pl) (recur (rest el) pl newList)
+      :else (recur (rest el) pl (conj newList (first el))))))
+
+
+(defn playerCollisionCheck [xpos, projectileList]
+  (let [a (vector xpos 38 1 )]
+    (if (some #{a} projectileList)
+      true
+      false)))
+
+(defn playerHitByShip [enemyPos enemyList xpos]
+  (when (> (+ (get enemyPos 1) 4) 35) ;check if they hit player
+    (let [a (vector (- xpos 1) 38 "#")
+          b (vector (- xpos 1) 38 "@")
+          c (vector (- xpos 1) 38 "=")
+          d (vector (- xpos 1) 38 "v")]
+    (if (some #{a b c d} enemyList)
+      true
+      false))))
+    
+
+(defn mainLoop [a, e, ep, s]
+  (loop [xpos a
+         enemyList e
+         enemyPos ep ;;starts at [0 0 0] xpos ypos 0=right 1=left -> swarm coordinate
+         speedCount 1 ;; helper to slow down enemy movement
+         projectileList '()
+         score s
+         carry 1 ;helper to slow player shot rate
+         ]
+    (clear-screen scr)
+    (drawEnemies enemyList)
+    (drawProjectiles projectileList)
+    (s/put-string scr (- xpos 1) 38 "nôn") ;putPlayer function
+    (displayScore score)
+    (s/move-cursor scr xpos 38)
+    (s/redraw scr)
+    (Thread/sleep 15) ;wait for input!  sleep oder input check?
+    (def input (s/get-key scr))
+;    (def input (s/get-key-blocking scr {:interval 20 :timeout 21}))
+    (cond
+      (= input :escape) (list false score)
+      (empty? enemyList) (list true score)
+      (or (playerCollisionCheck xpos projectileList) (playerHitByShip enemyPos enemyList xpos)) (list false score) ;;implement this
+      :else (recur
+;             (movePlayer (s/get-key scr) xpos)    ;new xpos
+             (movePlayer input xpos)    ;new xpos
+             (if (>= speedCount (getSpeed enemyList)) ;new enemyList
+               (moveEnemies enemyPos (collisionEnemyUpdate enemyList projectileList)) ;check set against projectiles  -> (moveEnemies enemyPos (collisionCheck enemyList projList))
+               ;(rest enemyList) ;;changing enemyList stops movement! why?
+               (collisionEnemyUpdate enemyList projectileList))
+             (if (>= speedCount (getSpeed enemyList)) ;new enemyPos
+               (moveEnemies enemyPos) ;;new swarm coordinate
+               enemyPos)
+             (if (>= speedCount (getSpeed enemyList)) ;new speedCount
+               1
+               (inc speedCount))
+;               (updateProjectileList projectileList (s/get-key scr) enemyList xpos)
+             (if (>= speedCount (getSpeed enemyList)) ;new projectileList
+               (apply conj (updateProjectileList projectileList input enemyList xpos carry) (enemyShots enemyList))
+               (updateProjectileList projectileList input enemyList xpos carry))
+              (+ score (- (count enemyList) (count (collisionEnemyUpdate enemyList projectileList)))) ;count (- oldenemylist newenemylist)
+              (cond
+                (and (= carry 1) (not (= input \space))) 1
+                (= carry 16) 1
+                (and (= carry 1) (= input \space)) (inc carry)
+                (> carry 1) (inc carry)
+                )
+                ))))
+
+
+(defn winstate [score]
+  (clear-screen scr)
+  (s/put-string scr 33 10 "YOU WIN!")
+  (s/put-string scr 33 11 (str "Score: " score))
+;  (s/get-key-blocking scr)
+  )
+
+(defn failstate [score]
+  (clear-screen scr)
+  (s/put-string scr 33 10 "YOU LOSE :c")
+  (s/put-string scr 33 11 (str "Score: " score))
+;  (s/get-key-blocking scr)
+  )
+
+(defn -main
+  "I don't do a whole lot ... yet."
+  [& args]
+
+
+;; game loop
+;; sub loop put-string scr x y enemysign
+
+(s/start scr)
+(let [x (mainLoop 2 enemyList [0 1 0] 0)]
+  (if (first x)
+  (winstate (rest x))
+  (failstate (rest x))))
+
+(s/move-cursor scr 41 11)
+(s/redraw scr)
+(Thread/sleep 3000)
+(s/put-string scr 25 30 "Press Enter to continue.")
+(s/move-cursor scr 25 30)
+(s/redraw scr)
+(read-line)
+(s/put-string scr 14 30 "Press Space to play again, any other key to quit.")
+(s/move-cursor scr 14 30)
+(s/redraw scr)
+(when (= (s/get-key-blocking scr) :space)
+  (s/stop scr)
+  (-main))
+
+(s/stop scr))
